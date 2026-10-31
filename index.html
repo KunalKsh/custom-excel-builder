@@ -113,7 +113,7 @@ const hrow = () => Math.max(1, parseInt($('#hrow').value) || 1);
 // ---- talk to the Python engine running in a Web Worker ----
 const worker = new Worker('worker.js');
 const pending = new Map();
-let rpcId = 0, busy = false, exporting = false, exportStart = 0;
+let rpcId = 0, busy = false, exporting = false, exportStart = 0, firstPct = null;
 
 const fmtTime = s => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
 function showProgress(msg, pct) {
@@ -124,8 +124,10 @@ function showProgress(msg, pct) {
   if (known) {
     fill.style.width = pct.toFixed(1) + '%';
     $('#progPct').textContent = Math.floor(pct) + '%';
-    const el = (Date.now() - exportStart) / 1000;
-    $('#progEta').textContent = pct >= 3 ? `· ${fmtTime(el)} elapsed · about ${fmtTime(el * (100 - pct) / pct)} left` : '';
+    const now = Date.now(), el = (now - exportStart) / 1000;
+    if (!firstPct) firstPct = { t: now, p: pct };   // measure speed from when reading began, not from opening the file
+    const rate = pct > firstPct.p ? (now - firstPct.t) / 1000 / (pct - firstPct.p) : 0;
+    $('#progEta').textContent = `· ${fmtTime(el)} elapsed` + (rate && pct - firstPct.p >= 2 ? ` · about ${fmtTime(rate * (100 - pct))} left` : '');
   } else {
     fill.style.width = '';
     $('#progPct').textContent = '';
@@ -264,7 +266,7 @@ $('#go').onclick = async () => {
     sheets: f.sheets.filter(s => s.sel.size).map(s => ({ name: s.name, cols: s.headers.filter(h => s.sel.has(h.idx)) }))
   })).filter(f => f.sheets.length);
   if (!files.length) return;
-  busy = true; exporting = true; exportStart = Date.now(); updateSummary();
+  busy = true; exporting = true; exportStart = Date.now(); firstPct = null; updateSummary();
   setStatus('Starting export... keep this tab open.'); showProgress('Opening your file... (big files take a minute)', null);
   try {
     const r = await rpc('export', { files, hrow: hrow(), merge: $('#oneSheet').checked, name: $('#outname').value.trim() });
