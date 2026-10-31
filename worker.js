@@ -30,7 +30,7 @@ onmessage = async ev => {
       call('remove_file', payload.id);
       try { py.FS.unmount('/mnt/' + payload.id); } catch (e) { /* already gone */ }
     } else if (type === 'export') {
-      const r = JSON.parse(call('export', JSON.stringify(payload), m => postMessage({ progress: m })));
+      const r = JSON.parse(call('export', JSON.stringify(payload), (m, p) => postMessage({ progress: m, pct: p == null ? null : p })));
       const data = py.FS.readFile(r.path);
       py.FS.unlink(r.path);
       postMessage({ id, result: { buffer: data.buffer, name: r.name, truncated: r.truncated } }, [data.buffer]);

@@ -54,6 +54,14 @@ input[type=number]{width:70px}
 .bar .in{max-width:1000px;margin:0 auto;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .pill{background:var(--accent-soft);color:var(--accent);padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600}
 .empty{color:var(--muted);text-align:center;padding:8px}
+.prog{max-width:1000px;margin:0 auto 10px}
+.prog[hidden]{display:none}
+.prog .top{display:flex;justify-content:space-between;gap:12px;font-size:13px;margin-bottom:6px}
+.prog .top b{font-size:15px}
+.track{height:12px;border-radius:99px;background:var(--line);overflow:hidden}
+.fill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .4s}
+.fill.indet{width:35%;animation:slide 1.2s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
 </style>
 </head>
 <body>
@@ -79,7 +87,12 @@ input[type=number]{width:70px}
   <div id="files"></div>
 </div>
 
-<div class="bar"><div class="in">
+<div class="bar">
+<div class="prog" id="prog" hidden>
+  <div class="top"><span id="progMsg">Starting...</span><span><b id="progPct">0%</b> <span id="progEta"></span></span></div>
+  <div class="track"><div class="fill indet" id="progFill"></div></div>
+</div>
+<div class="in">
   <span class="pill" id="summary">0 columns selected</span>
   <label class="row">Output name <input type="text" id="outname" value="Custom_Output"></label>
   <label class="row"><input type="checkbox" id="oneSheet"> Merge everything into a single sheet</label>
@@ -100,11 +113,33 @@ const hrow = () => Math.max(1, parseInt($('#hrow').value) || 1);
 // ---- talk to the Python engine running in a Web Worker ----
 const worker = new Worker('worker.js');
 const pending = new Map();
-let rpcId = 0, busy = false;
+let rpcId = 0, busy = false, exporting = false, exportStart = 0;
+
+const fmtTime = s => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
+function showProgress(msg, pct) {
+  $('#prog').hidden = false;
+  const fill = $('#progFill'), known = typeof pct === 'number';
+  $('#progMsg').textContent = msg || 'Working...';
+  fill.classList.toggle('indet', !known);
+  if (known) {
+    fill.style.width = pct.toFixed(1) + '%';
+    $('#progPct').textContent = Math.floor(pct) + '%';
+    const el = (Date.now() - exportStart) / 1000;
+    $('#progEta').textContent = pct >= 3 ? `· ${fmtTime(el)} elapsed · about ${fmtTime(el * (100 - pct) / pct)} left` : '';
+  } else {
+    fill.style.width = '';
+    $('#progPct').textContent = '';
+    $('#progEta').textContent = `· ${fmtTime((Date.now() - exportStart) / 1000)} elapsed`;
+  }
+}
 worker.onmessage = ev => {
   const m = ev.data;
   if (m.fatal) { setStatus(m.fatal, true); return; }
-  if (m.progress !== undefined && m.id === undefined && m.result === undefined) { if (busy || m.progress) setStatus(m.progress); return; }
+  if (m.progress !== undefined && m.id === undefined && m.result === undefined) {
+    if (busy || m.progress) setStatus(m.progress);
+    if (exporting) showProgress(m.progress, m.pct);
+    return;
+  }
   const p = pending.get(m.id); if (!p) return;
   pending.delete(m.id);
   m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
@@ -229,15 +264,17 @@ $('#go').onclick = async () => {
     sheets: f.sheets.filter(s => s.sel.size).map(s => ({ name: s.name, cols: s.headers.filter(h => s.sel.has(h.idx)) }))
   })).filter(f => f.sheets.length);
   if (!files.length) return;
-  busy = true; updateSummary(); setStatus('Starting export... keep this tab open.');
+  busy = true; exporting = true; exportStart = Date.now(); updateSummary();
+  setStatus('Starting export... keep this tab open.'); showProgress('Opening your file... (big files take a minute)', null);
   try {
     const r = await rpc('export', { files, hrow: hrow(), merge: $('#oneSheet').checked, name: $('#outname').value.trim() });
     const url = URL.createObjectURL(new Blob([r.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+    showProgress('Done', 100); $('#progEta').textContent = `· finished in ${fmtTime((Date.now() - exportStart) / 1000)}`;
     setStatus(`Downloaded ${r.name}` + (r.truncated ? " (rows were cut at Excel's 1,048,575-row limit)" : ''));
-  } catch (e) { setStatus('Export failed: ' + e.message, true); }
-  busy = false; updateSummary();
+  } catch (e) { setStatus('Export failed: ' + e.message, true); $('#prog').hidden = true; }
+  busy = false; exporting = false; updateSummary();
 };
 </script>
 </body>

@@ -75,8 +75,34 @@ def headers_for(f, sheet, hrow):
     return []
 
 
+def row_count(f, sheet):
+    """Rows in a sheet (xlsx/xls/csv); used only for the progress bar."""
+    k, p = f["kind"], f["path"]
+    try:
+        if k == "xlsx":
+            from openpyxl import load_workbook
+            wb = load_workbook(p, read_only=True)
+            n = wb[sheet].max_row or 0
+            wb.close()
+            return n
+        if k == "xls":
+            import xlrd
+            return xlrd.open_workbook(p, on_demand=True).sheet_by_name(sheet).nrows
+        n = 0
+        with open(p, "rb") as fh:
+            while True:
+                b = fh.read(1 << 22)
+                if not b:
+                    break
+                n += b.count(b"\n")
+        return n + 1
+    except Exception:
+        return 0
+
+
 def file_payload(fid, hrow):
     f = FILES[fid]
+    f["rows"] = {}
     if f["kind"] == "xlsb":
         # opening a big .xlsb is slow (shared strings), so open it once for every sheet
         from pyxlsb import open_workbook
@@ -85,6 +111,7 @@ def file_payload(fid, hrow):
             for s in wb.sheets:
                 hdrs = []
                 with wb.get_sheet(s) as sh:
+                    f["rows"][s] = sh.dimension.h if sh.dimension else 0
                     for row in sh.rows():
                         if not row or row[0].r < n:
                             continue
@@ -94,7 +121,10 @@ def file_payload(fid, hrow):
                         break
                 sheets.append({"name": s, "headers": hdrs})
     else:
-        sheets = [{"name": s, "headers": headers_for(f, s, hrow)} for s in sheet_names(f)]
+        sheets = []
+        for s in sheet_names(f):
+            f["rows"][s] = row_count(f, s)
+            sheets.append({"name": s, "headers": headers_for(f, s, hrow)})
     return {"id": fid, "name": f["name"], "size": os.path.getsize(f["path"]), "sheets": sheets}
 
 
@@ -155,6 +185,13 @@ def export(req_json, progress):
                 jobs.append((f, sr["name"], sr["cols"]))
     multi = len({j[0]["name"] for j in jobs}) > 1
 
+    # progress: percentage of source rows read across all selected sheets
+    total = sum(max(f.get("rows", {}).get(sheet, 0) - hrow, 0) for f, sheet, _ in jobs)
+    state = {"done": 0}
+
+    def tick(msg):
+        progress(msg, min(97.0, state["done"] * 97.0 / total) if total else None)
+
     def write_cell(ws, r, c, v, date_col):
         if isinstance(v, bool):
             ws.write_boolean(r, c, v)
@@ -191,6 +228,9 @@ def export(req_json, progress):
             pos = {c["idx"]: labels.index(c["label"]) + 2 for c in cols}
             dcols = {pos[c["idx"]] for c in cols if is_date_label(c["label"])}
             for r, d in iter_rows(f, sheet, pos.keys(), hrow):
+                state["done"] += 1
+                if state["done"] % 5000 == 0:
+                    tick(f"Reading {f['name']} / {sheet.strip()}...")
                 if r == hrow - 1 or not d:
                     continue
                 if out > MAX_ROWS:
@@ -201,8 +241,6 @@ def export(req_json, progress):
                 for i, v in d.items():
                     write_cell(ws, out, pos[i], v, pos[i] in dcols)
                 out += 1
-                if out % 20000 == 0:
-                    progress(f"{f['name']} / {sheet.strip()}: {out:,} rows written...")
         ws.autofilter(0, 0, max(out - 1, 1), len(labels) + 1)
     else:
         for f, sheet, cols in jobs:
@@ -216,6 +254,9 @@ def export(req_json, progress):
                 ws.set_column(n, n, max(12, min(len(c["label"]) + 4, 40)))
             out = 1
             for r, d in iter_rows(f, sheet, order.keys(), hrow):
+                state["done"] += 1
+                if state["done"] % 5000 == 0:
+                    tick(f"Reading {f['name']} / {sheet.strip()}...")
                 if r == hrow - 1 or not d:
                     continue
                 if out > MAX_ROWS:
@@ -224,10 +265,8 @@ def export(req_json, progress):
                 for i, v in d.items():
                     write_cell(ws, out, order[i], v, order[i] in dcols)
                 out += 1
-                if out % 20000 == 0:
-                    progress(f"{f['name']} / {sheet.strip()}: {out:,} rows written...")
             ws.autofilter(0, 0, max(out - 1, 1), len(cols) - 1)
-            progress(f"{sheet.strip()}: {out - 1:,} rows done")
-    progress("Saving file...")
+            tick(f"{sheet.strip()}: {out - 1:,} rows done")
+    progress("Saving file...", 98)
     wb.close()
     return json.dumps({"path": dest, "name": out_name, "truncated": truncated})
