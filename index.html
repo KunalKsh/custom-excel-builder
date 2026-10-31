@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom Excel Builder</title>
+<style>
+:root{
+  --bg:#f5f6f8;--card:#fff;--ink:#1c2230;--muted:#6b7385;--line:#e1e4ea;
+  --accent:#1f6feb;--accent-ink:#fff;--accent-soft:#e8f0fe;--ok:#1a7f4b;--bad:#c62828;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#12151c;--card:#1b2029;--ink:#e8ebf1;--muted:#8d96a8;--line:#2b3240;
+  --accent:#4c8dff;--accent-ink:#0b1020;--accent-soft:#1c2a45;--ok:#4cc38a;--bad:#ff6b6b;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:24px 16px 120px}
+h1{font-size:24px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:32px 16px;text-align:center;cursor:pointer;transition:.15s}
+.drop.over,.drop:hover{border-color:var(--accent);background:var(--accent-soft)}
+.drop b{display:block;font-size:17px;margin-bottom:4px}
+.drop span{color:var(--muted);font-size:13px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:6px 12px;border-radius:8px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600;padding:10px 22px}
+button.primary:disabled{opacity:.5;cursor:not-allowed}
+button.link{border:0;background:none;color:var(--accent);padding:2px 6px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+input[type=text],input[type=number],select{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+input[type=number]{width:70px}
+.fhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.fname{font-weight:600;word-break:break-all}
+.badge{font-size:12px;color:var(--muted)}
+.sheet{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}
+.shead{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);cursor:pointer;user-select:none}
+.shead .arrow{width:14px;transition:.15s;color:var(--muted)}
+.sheet.open .arrow{transform:rotate(90deg)}
+.sbody{display:none;padding:10px 12px}
+.sheet.open .sbody{display:block}
+.tools{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 12px}
+.cols label{display:flex;gap:8px;align-items:flex-start;padding:3px 4px;border-radius:6px;cursor:pointer;font-size:14px}
+.cols label:hover{background:var(--accent-soft)}
+.cols .ltr{color:var(--muted);font-size:12px;min-width:26px;padding-top:2px}
+.cols label.hide{display:none}
+.x{margin-left:auto}
+.status{color:var(--muted);font-size:14px;min-height:20px}
+.status.err{color:var(--bad)}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:12px 16px}
+.bar .in{max-width:1000px;margin:0 auto;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.pill{background:var(--accent-soft);color:var(--accent);padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600}
+.empty{color:var(--muted);text-align:center;padding:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Custom Excel Builder</h1>
+  <p class="sub">Upload up to 5 files, tick the sheets and headers you need, download one clean Excel file. Everything runs inside your browser &mdash; your files are never uploaded anywhere.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <b>Drop files here or click to browse</b>
+      <span>.xlsx &middot; .xlsb &middot; .xlsm &middot; .xls &middot; .csv &middot; up to 5 files</span>
+    </div>
+    <input type="file" id="pick" multiple hidden accept=".xlsx,.xlsb,.xlsm,.xls,.csv,.tsv">
+    <div class="row" style="margin-top:12px">
+      <label>Header row # <input type="number" id="hrow" min="1" value="1"></label>
+      <span class="badge">Change if your headers are not on the first row.</span>
+      <span class="grow"></span>
+      <button id="clear">Remove all files</button>
+    </div>
+    <div class="status" id="status" style="margin-top:8px"></div>
+  </div>
+
+  <div id="files"></div>
+</div>
+
+<div class="bar"><div class="in">
+  <span class="pill" id="summary">0 columns selected</span>
+  <label class="row">Output name <input type="text" id="outname" value="Custom_Output"></label>
+  <label class="row"><input type="checkbox" id="oneSheet"> Merge everything into a single sheet</label>
+  <span class="grow"></span>
+  <button class="primary" id="go" disabled>Download Excel</button>
+</div></div>
+
+<script>
+const MAX_FILES = 5;
+const $ = s => document.querySelector(s);
+const state = { files: [], fid: 0 };
+
+const letter = i => { let s = ''; i++; while (i) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; };
+const setStatus = (t, err) => { const s = $('#status'); s.textContent = t || ''; s.className = 'status' + (err ? ' err' : ''); };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const hrow = () => Math.max(1, parseInt($('#hrow').value) || 1);
+
+// ---- talk to the Python engine running in a Web Worker ----
+const worker = new Worker('worker.js');
+const pending = new Map();
+let rpcId = 0, busy = false;
+worker.onmessage = ev => {
+  const m = ev.data;
+  if (m.fatal) { setStatus(m.fatal, true); return; }
+  if (m.progress !== undefined && m.id === undefined && m.result === undefined) { if (busy || m.progress) setStatus(m.progress); return; }
+  const p = pending.get(m.id); if (!p) return;
+  pending.delete(m.id);
+  m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
+};
+const rpc = (type, payload, transfer) => new Promise((resolve, reject) => {
+  const id = ++rpcId; pending.set(id, { resolve, reject });
+  worker.postMessage({ id, type, payload }, transfer || []);
+});
+
+async function addFiles(list) {
+  busy = true;
+  for (const f of [...list]) {
+    if (state.files.length >= MAX_FILES) { setStatus(`Limit is ${MAX_FILES} files. "${f.name}" and later files were skipped.`, true); break; }
+    setStatus(`Reading ${f.name} (${(f.size / 1048576).toFixed(1)} MB)... the engine may still be starting.`);
+    try {
+      const fid = 'f' + (++state.fid), ext = (f.name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+      const wrapped = new File([f], 'data' + ext); // same bytes, safe file name
+      const j = await rpc('add', { fid, name: f.name, file: wrapped, hrow: hrow() });
+      state.files.push({ id: j.id, name: j.name, size: j.size,
+        sheets: j.sheets.map(s => ({ name: s.name, headers: s.headers, sel: new Set(), open: false })) });
+      setStatus(''); render();
+    } catch (e) { setStatus(`Could not read "${f.name}": ${e.message}`, true); }
+  }
+  busy = false;
+}
+
+async function refreshHeaders() {
+  if (!state.files.length) return;
+  busy = true; setStatus('Reloading headers...');
+  try {
+    const res = await rpc('headers', { ids: state.files.map(f => f.id), hrow: hrow() });
+    for (const p of res) {
+      const f = state.files.find(x => x.id === p.id); if (!f) continue;
+      for (const s of f.sheets) {
+        const n = p.sheets.find(x => x.name === s.name);
+        s.headers = n ? n.headers : [];
+        const ok = new Set(s.headers.map(h => h.idx));
+        s.sel = new Set([...s.sel].filter(i => ok.has(i)));
+      }
+    }
+    setStatus(''); render();
+  } catch (e) { setStatus(e.message, true); }
+  busy = false;
+}
+
+function render() {
+  const root = $('#files');
+  if (!state.files.length) { root.innerHTML = ''; updateSummary(); return; }
+  root.innerHTML = state.files.map(f => `
+    <div class="card" data-f="${f.id}">
+      <div class="fhead"><span class="fname">${esc(f.name)}</span>
+        <span class="badge">${f.sheets.length} sheet${f.sheets.length > 1 ? 's' : ''} &middot; ${(f.size / 1048576).toFixed(1)} MB</span>
+        <button class="x" data-act="rmfile">Remove</button></div>
+      ${f.sheets.map((s, si) => `
+        <div class="sheet ${s.open ? 'open' : ''}" data-s="${si}">
+          <div class="shead" data-act="toggle"><span class="arrow">&#9654;</span>
+            <b>${esc(s.name.trim() || '(unnamed)')}</b>
+            <span class="badge">${s.headers.length} headers &middot; <span data-cnt>${s.sel.size}</span> selected</span></div>
+          <div class="sbody">
+            <div class="tools">
+              <button data-act="all">Select all</button><button data-act="none">Clear</button>
+              <input type="text" placeholder="Search headers..." data-act="search" class="grow">
+            </div>
+            ${s.headers.length ? `<div class="cols">${s.headers.map(h => `
+              <label><input type="checkbox" data-c="${h.idx}" ${s.sel.has(h.idx) ? 'checked' : ''}>
+              <span class="ltr">${letter(h.idx)}</span><span>${esc(h.label)}</span></label>`).join('')}</div>`
+              : '<div class="empty">No headers found on this row.</div>'}
+          </div>
+        </div>`).join('')}
+    </div>`).join('');
+  updateSummary();
+}
+
+function updateSummary() {
+  let n = 0, sh = 0;
+  for (const f of state.files) for (const s of f.sheets) if (s.sel.size) { n += s.sel.size; sh++; }
+  $('#summary').textContent = `${n} column${n === 1 ? '' : 's'} from ${sh} sheet${sh === 1 ? '' : 's'}`;
+  $('#go').disabled = n === 0 || busy;
+}
+
+$('#files').addEventListener('click', e => {
+  const card = e.target.closest('.card'); if (!card) return;
+  const f = state.files.find(x => x.id === card.dataset.f);
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'rmfile') { rpc('remove', { id: f.id }); state.files = state.files.filter(x => x !== f); render(); return; }
+  const sEl = e.target.closest('.sheet'); if (!sEl) return;
+  const s = f.sheets[sEl.dataset.s];
+  if (act === 'toggle') { s.open = !s.open; sEl.classList.toggle('open', s.open); }
+  else if (act === 'all' || act === 'none') {
+    sEl.querySelectorAll('.cols label:not(.hide) input').forEach(cb => {
+      cb.checked = act === 'all'; act === 'all' ? s.sel.add(+cb.dataset.c) : s.sel.delete(+cb.dataset.c);
+    });
+    sEl.querySelector('[data-cnt]').textContent = s.sel.size; updateSummary();
+  }
+});
+$('#files').addEventListener('change', e => {
+  const cb = e.target; if (cb.dataset.c === undefined) return;
+  const f = state.files.find(x => x.id === cb.closest('.card').dataset.f);
+  const sEl = cb.closest('.sheet'), s = f.sheets[sEl.dataset.s];
+  cb.checked ? s.sel.add(+cb.dataset.c) : s.sel.delete(+cb.dataset.c);
+  sEl.querySelector('[data-cnt]').textContent = s.sel.size; updateSummary();
+});
+$('#files').addEventListener('input', e => {
+  if (e.target.dataset.act !== 'search') return;
+  const q = e.target.value.toLowerCase();
+  e.target.closest('.sheet').querySelectorAll('.cols label').forEach(l =>
+    l.classList.toggle('hide', !l.textContent.toLowerCase().includes(q)));
+});
+
+const drop = $('#drop');
+drop.onclick = () => $('#pick').click();
+$('#pick').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('#hrow').onchange = refreshHeaders;
+$('#clear').onclick = () => { state.files.forEach(f => rpc('remove', { id: f.id })); state.files = []; setStatus(''); render(); };
+
+$('#go').onclick = async () => {
+  const files = state.files.map(f => ({
+    id: f.id,
+    sheets: f.sheets.filter(s => s.sel.size).map(s => ({ name: s.name, cols: s.headers.filter(h => s.sel.has(h.idx)) }))
+  })).filter(f => f.sheets.length);
+  if (!files.length) return;
+  busy = true; updateSummary(); setStatus('Starting export... keep this tab open.');
+  try {
+    const r = await rpc('export', { files, hrow: hrow(), merge: $('#oneSheet').checked, name: $('#outname').value.trim() });
+    const url = URL.createObjectURL(new Blob([r.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setStatus(`Downloaded ${r.name}` + (r.truncated ? " (rows were cut at Excel's 1,048,575-row limit)" : ''));
+  } catch (e) { setStatus('Export failed: ' + e.message, true); }
+  busy = false; updateSummary();
+};
+</script>
+</body>
+</html>
